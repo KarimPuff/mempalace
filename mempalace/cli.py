@@ -97,16 +97,19 @@ def cmd_mine(args):
 
 
 def cmd_search(args):
-    from .searcher import search
+    from .searcher import search, SearchError
 
     palace_path = os.path.expanduser(args.palace) if args.palace else MempalaceConfig().palace_path
-    search(
-        query=args.query,
-        palace_path=palace_path,
-        wing=args.wing,
-        room=args.room,
-        n_results=args.results,
-    )
+    try:
+        search(
+            query=args.query,
+            palace_path=palace_path,
+            wing=args.wing,
+            room=args.room,
+            n_results=args.results,
+        )
+    except SearchError:
+        sys.exit(1)
 
 
 def cmd_wakeup(args):
@@ -223,6 +226,20 @@ def cmd_repair(args):
     print(f"\n{'=' * 55}\n")
 
 
+def cmd_hook(args):
+    """Run hook logic: reads JSON from stdin, outputs JSON to stdout."""
+    from .hooks_cli import run_hook
+
+    run_hook(hook_name=args.hook, harness=args.harness)
+
+
+def cmd_instructions(args):
+    """Output skill instructions to stdout."""
+    from .instructions_cli import run_instructions
+
+    run_instructions(name=args.name)
+
+
 def cmd_compress(args):
     """Compress drawers in a wing using AAAK Dialect."""
     import chromadb
@@ -253,20 +270,31 @@ def cmd_compress(args):
         print("  Run: mempalace init <dir> then mempalace mine <dir>")
         sys.exit(1)
 
-    # Query drawers in the wing
+    # Query drawers in batches to avoid SQLite variable limit (~999)
     where = {"wing": args.wing} if args.wing else None
-    try:
-        kwargs = {"include": ["documents", "metadatas"]}
-        if where:
-            kwargs["where"] = where
-        results = col.get(**kwargs)
-    except Exception as e:
-        print(f"\n  Error reading drawers: {e}")
-        sys.exit(1)
-
-    docs = results["documents"]
-    metas = results["metadatas"]
-    ids = results["ids"]
+    _BATCH = 500
+    docs, metas, ids = [], [], []
+    offset = 0
+    while True:
+        try:
+            kwargs = {"include": ["documents", "metadatas"], "limit": _BATCH, "offset": offset}
+            if where:
+                kwargs["where"] = where
+            batch = col.get(**kwargs)
+        except Exception as e:
+            if not docs:
+                print(f"\n  Error reading drawers: {e}")
+                sys.exit(1)
+            break
+        batch_docs = batch.get("documents", [])
+        if not batch_docs:
+            break
+        docs.extend(batch_docs)
+        metas.extend(batch.get("metadatas", []))
+        ids.extend(batch.get("ids", []))
+        offset += len(batch_docs)
+        if len(batch_docs) < _BATCH:
+            break
 
     if not docs:
         wing_label = f" in wing '{args.wing}'" if args.wing else ""
@@ -437,6 +465,35 @@ def main():
         help="Only split files containing at least N sessions (default: 2)",
     )
 
+    # hook
+    p_hook = sub.add_parser(
+        "hook",
+        help="Run hook logic (reads JSON from stdin, outputs JSON to stdout)",
+    )
+    hook_sub = p_hook.add_subparsers(dest="hook_action")
+    p_hook_run = hook_sub.add_parser("run", help="Execute a hook")
+    p_hook_run.add_argument(
+        "--hook",
+        required=True,
+        choices=["session-start", "stop", "precompact"],
+        help="Hook name to run",
+    )
+    p_hook_run.add_argument(
+        "--harness",
+        required=True,
+        choices=["claude-code", "codex"],
+        help="Harness type (determines stdin JSON format)",
+    )
+
+    # instructions
+    p_instructions = sub.add_parser(
+        "instructions",
+        help="Output skill instructions to stdout",
+    )
+    instructions_sub = p_instructions.add_subparsers(dest="instructions_name")
+    for instr_name in ["init", "search", "mine", "help", "status"]:
+        instructions_sub.add_parser(instr_name, help=f"Output {instr_name} instructions")
+
     # repair
     sub.add_parser(
         "repair",
@@ -450,6 +507,23 @@ def main():
 
     if not args.command:
         parser.print_help()
+        return
+
+    # Handle two-level subcommands
+    if args.command == "hook":
+        if not getattr(args, "hook_action", None):
+            p_hook.print_help()
+            return
+        cmd_hook(args)
+        return
+
+    if args.command == "instructions":
+        name = getattr(args, "instructions_name", None)
+        if not name:
+            p_instructions.print_help()
+            return
+        args.name = name
+        cmd_instructions(args)
         return
 
     dispatch = {

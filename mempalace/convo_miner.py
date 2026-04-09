@@ -286,7 +286,7 @@ def mine_convos(
     print(f"  Palace:  {palace_path}")
     if dry_run:
         print("  DRY RUN — nothing will be filed")
-    print(f"{'─' * 55}\n")
+    print(f"{'-' * 55}\n")
 
     collection = get_collection(palace_path) if not dry_run else None
 
@@ -305,7 +305,7 @@ def mine_convos(
         # Normalize format
         try:
             content = normalize(str(filepath))
-        except Exception:
+        except (OSError, ValueError):
             continue
 
         if not content or len(content.strip()) < MIN_CHUNK_SIZE:
@@ -356,7 +356,7 @@ def mine_convos(
             chunk_room = chunk.get("memory_type", room) if extract_mode == "general" else room
             if extract_mode == "general":
                 room_counts[chunk_room] += 1
-            drawer_id = f"drawer_{wing}_{chunk_room}_{hashlib.md5((source_file + str(chunk['chunk_index'])).encode()).hexdigest()[:16]}"
+            drawer_id = f"drawer_{wing}_{chunk_room}_{hashlib.md5((source_file + str(chunk['chunk_index'])).encode(), usedforsecurity=False).hexdigest()[:16]}"
             try:
                 collection.add(
                     documents=[chunk["content"]],
